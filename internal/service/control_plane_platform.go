@@ -598,6 +598,7 @@ type NodeSummary struct {
 	LastError                        string    `json:"last_error,omitempty"`
 	CircuitOpenSince                 *string   `json:"circuit_open_since"`
 	FailureCount                     int       `json:"failure_count"`
+	Score                            int32     `json:"score"`
 	EgressIP                         string    `json:"egress_ip,omitempty"`
 	Region                           string    `json:"region,omitempty"`
 	LastEgressUpdate                 string    `json:"last_egress_update,omitempty"`
@@ -629,6 +630,7 @@ func (s *ControlPlaneService) nodeEntryToSummary(h node.Hash, entry *node.NodeEn
 		HasOutbound:  entry.HasOutbound(),
 		LastError:    entry.GetLastError(),
 		FailureCount: int(entry.FailureCount.Load()),
+		Score:        entry.GetScore(),
 	}
 
 	if s != nil && s.Pool != nil {
