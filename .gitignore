@@ -8,3 +8,8 @@ start-instance.sh
 .claude/
 .omc/
 .local/
+data/
+warp/
+example_ruyipage.py
+.env
+.git-rewrite/
