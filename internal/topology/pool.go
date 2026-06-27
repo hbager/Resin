@@ -50,6 +50,14 @@ type GlobalNodePool struct {
 	maxConsecutiveFailures func() int
 	latencyDecayWindow     func() time.Duration
 	latencyAuthorities     func() []string
+	scoreInitial           func() int
+	scoreMax               func() int
+	scoreIncSuccess        func() int
+	scoreDecFail           func() int
+	scoreRecovery          func() int
+	scoreRecoveryDelay     func() time.Duration
+	scoreLatencyThreshold  func() time.Duration
+	scoreDecLatency        func() int
 }
 
 // PoolConfig configures the GlobalNodePool.
@@ -65,6 +73,14 @@ type PoolConfig struct {
 	MaxConsecutiveFailures func() int
 	LatencyDecayWindow     func() time.Duration
 	LatencyAuthorities     func() []string
+	ScoreInitial           func() int
+	ScoreMax               func() int
+	ScoreIncSuccess        func() int
+	ScoreDecFail           func() int
+	ScoreRecovery          func() int
+	ScoreRecoveryDelay     func() time.Duration
+	ScoreLatencyThreshold  func() time.Duration
+	ScoreDecLatency        func() int
 }
 
 var (
@@ -81,6 +97,33 @@ func NewGlobalNodePool(cfg PoolConfig) *GlobalNodePool {
 		panic("topology: NewGlobalNodePool requires non-nil MaxConsecutiveFailures")
 	}
 
+	scoreInitialFn := cfg.ScoreInitial
+	if scoreInitialFn == nil {
+		scoreInitialFn = func() int { return 50 }
+	}
+	scoreMaxFn := cfg.ScoreMax
+	if scoreMaxFn == nil {
+		scoreMaxFn = func() int { return 100 }
+	}
+	scoreIncSuccessFn := cfg.ScoreIncSuccess
+	if scoreIncSuccessFn == nil {
+		scoreIncSuccessFn = func() int { return 5 }
+	}
+	scoreDecFailFn := cfg.ScoreDecFail
+	if scoreDecFailFn == nil {
+		scoreDecFailFn = func() int { return 10 }
+	}
+	scoreRecoveryFn := cfg.ScoreRecovery
+	if scoreRecoveryFn == nil {
+		scoreRecoveryFn = func() int { return 30 }
+	}
+	scoreRecoveryDelayFn := cfg.ScoreRecoveryDelay
+	if scoreRecoveryDelayFn == nil {
+		scoreRecoveryDelayFn = func() time.Duration { return 5 * time.Minute }
+	}
+	scoreLatencyThresholdFn := cfg.ScoreLatencyThreshold
+	scoreDecLatencyFn := cfg.ScoreDecLatency
+
 	return &GlobalNodePool{
 		nodes:                  xsync.NewMap[node.Hash, *node.NodeEntry](),
 		subLookup:              cfg.SubLookup,
@@ -94,6 +137,14 @@ func NewGlobalNodePool(cfg PoolConfig) *GlobalNodePool {
 		maxConsecutiveFailures: maxConsecutiveFailuresFn,
 		latencyDecayWindow:     cfg.LatencyDecayWindow,
 		latencyAuthorities:     cfg.LatencyAuthorities,
+		scoreInitial:           scoreInitialFn,
+		scoreMax:               scoreMaxFn,
+		scoreIncSuccess:        scoreIncSuccessFn,
+		scoreDecFail:           scoreDecFailFn,
+		scoreRecovery:          scoreRecoveryFn,
+		scoreRecoveryDelay:     scoreRecoveryDelayFn,
+		scoreLatencyThreshold:  scoreLatencyThresholdFn,
+		scoreDecLatency:        scoreDecLatencyFn,
 		platformByID:           make(map[string]*platform.Platform),
 		platformByName:         make(map[string]*platform.Platform),
 	}
@@ -532,21 +583,49 @@ func (p *GlobalNodePool) RecordResult(hash node.Hash, success bool) {
 	circuitStateChanged := false
 
 	if success {
-		if entry.FailureCount.Swap(0) != 0 {
-			dynamicChanged = true
-		}
-		if entry.CircuitOpenSince.Swap(0) != 0 {
+		oldFail := entry.FailureCount.Swap(0)
+		oldCircuit := entry.CircuitOpenSince.Swap(0)
+
+		// Score handling on success
+		scoreMax := int32(p.currentScoreMax())
+		oldScore := entry.GetScore()
+		if oldCircuit != 0 {
+			// Recovery from circuit-open: set to ScoreRecovery
+			entry.SetScore(int32(p.currentScoreRecovery()))
 			dynamicChanged = true
 			circuitStateChanged = true
+		} else if oldScore > 0 {
+			// Normal success: increment score
+			newScore := entry.AddScore(int32(p.currentScoreIncSuccess()), scoreMax)
+			if newScore != oldScore {
+				dynamicChanged = true
+			}
+		} else {
+			// First successful probe: set to ScoreInitial
+			entry.SetScore(int32(p.currentScoreInitial()))
+			dynamicChanged = true
+		}
+
+		if oldFail != 0 {
+			dynamicChanged = true
 		}
 	} else {
-		newCount := entry.FailureCount.Add(1)
+		entry.FailureCount.Add(1)
 		dynamicChanged = true
-		maxConsecutiveFailures := p.currentMaxConsecutiveFailures()
-		if maxConsecutiveFailures > 0 && int(newCount) >= maxConsecutiveFailures {
-			// Open circuit if not already open.
-			if entry.CircuitOpenSince.CompareAndSwap(0, time.Now().UnixNano()) {
+
+		// Score decrement on failure
+		newScore := entry.AddScore(int32(-p.currentScoreDecFail()), int32(p.currentScoreMax()))
+
+		// Open circuit if score reaches 0
+		if newScore <= 0 {
+			now := time.Now().UnixNano()
+			old := entry.CircuitOpenSince.Swap(now)
+			if old == 0 {
+				// Was not previously open → newly opened
 				circuitStateChanged = true
+			} else {
+				// Was already open → reset recovery timer
+				dynamicChanged = true
 			}
 		}
 	}
@@ -587,6 +666,27 @@ func (p *GlobalNodePool) currentMaxConsecutiveFailures() int {
 	return p.maxConsecutiveFailures()
 }
 
+func (p *GlobalNodePool) currentScoreInitial() int       { return p.scoreInitial() }
+func (p *GlobalNodePool) currentScoreMax() int           { return p.scoreMax() }
+func (p *GlobalNodePool) currentScoreIncSuccess() int    { return p.scoreIncSuccess() }
+func (p *GlobalNodePool) currentScoreDecFail() int       { return p.scoreDecFail() }
+func (p *GlobalNodePool) currentScoreRecovery() int      { return p.scoreRecovery() }
+func (p *GlobalNodePool) currentScoreRecoveryDelay() time.Duration {
+	return p.scoreRecoveryDelay()
+}
+func (p *GlobalNodePool) currentScoreLatencyThreshold() time.Duration {
+	if p.scoreLatencyThreshold == nil {
+		return 500 * time.Millisecond
+	}
+	return p.scoreLatencyThreshold()
+}
+func (p *GlobalNodePool) currentScoreDecLatency() int {
+	if p.scoreDecLatency == nil {
+		return 5
+	}
+	return p.scoreDecLatency()
+}
+
 // RecordLatency records a latency probe attempt for the given node and raw target.
 // rawTarget is normalized through ExtractDomain (eTLD+1). latency may be nil,
 // which means "attempt only" without latency sample writeback.
@@ -620,6 +720,18 @@ func (p *GlobalNodePool) RecordLatency(hash node.Hash, rawTarget string, latency
 	}
 
 	wasEmpty, evictedDomain, evicted := entry.LatencyTable.UpdateClassified(domain, *latency, decayWindow, isAuthority)
+
+	// Latency penalty: if latency exceeds threshold, decrement score.
+	threshold := p.currentScoreLatencyThreshold()
+	if threshold > 0 && *latency > threshold {
+		oldScore := entry.GetScore()
+		if oldScore > 0 {
+			entry.AddScore(int32(-p.currentScoreDecLatency()), int32(p.currentScoreMax()))
+			if p.onNodeDynamicChanged != nil {
+				p.onNodeDynamicChanged(hash)
+			}
+		}
+	}
 
 	// If the table transitioned from empty to non-empty, the node might
 	// now satisfy the HasLatency filter — notify platforms.

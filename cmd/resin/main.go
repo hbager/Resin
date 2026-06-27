@@ -266,6 +266,30 @@ func newTopologyRuntime(
 		LatencyAuthorities: func() []string {
 			return runtimeConfigSnapshot(runtimeCfg).LatencyAuthorities
 		},
+		ScoreInitial: func() int {
+			return runtimeConfigSnapshot(runtimeCfg).ScoreInitial
+		},
+		ScoreMax: func() int {
+			return runtimeConfigSnapshot(runtimeCfg).ScoreMax
+		},
+		ScoreIncSuccess: func() int {
+			return runtimeConfigSnapshot(runtimeCfg).ScoreIncSuccess
+		},
+		ScoreDecFail: func() int {
+			return runtimeConfigSnapshot(runtimeCfg).ScoreDecFail
+		},
+		ScoreRecovery: func() int {
+			return runtimeConfigSnapshot(runtimeCfg).ScoreRecovery
+		},
+		ScoreRecoveryDelay: func() time.Duration {
+			return time.Duration(runtimeConfigSnapshot(runtimeCfg).ScoreRecoveryDelay)
+		},
+		ScoreLatencyThreshold: func() time.Duration {
+			return time.Duration(runtimeConfigSnapshot(runtimeCfg).ScoreLatencyThreshold)
+		},
+		ScoreDecLatency: func() int {
+			return runtimeConfigSnapshot(runtimeCfg).ScoreDecLatency
+		},
 	})
 	log.Println("Topology: GlobalNodePool initialized")
 
@@ -314,6 +338,15 @@ func newTopologyRuntime(
 		},
 		LatencyAuthorities: func() []string {
 			return runtimeConfigSnapshot(runtimeCfg).LatencyAuthorities
+		},
+		ScoreRecoveryDelay: func() time.Duration {
+			return time.Duration(runtimeConfigSnapshot(runtimeCfg).ScoreRecoveryDelay)
+		},
+		ScoreLatencyThreshold: func() time.Duration {
+			return time.Duration(runtimeConfigSnapshot(runtimeCfg).ScoreLatencyThreshold)
+		},
+		ScoreDecLatency: func() int {
+			return runtimeConfigSnapshot(runtimeCfg).ScoreDecLatency
 		},
 	})
 
@@ -543,6 +576,7 @@ func newFlushReaders(
 				LastLatencyProbeAttemptNs:          entry.LastLatencyProbeAttempt.Load(),
 				LastAuthorityLatencyProbeAttemptNs: entry.LastAuthorityLatencyProbeAttempt.Load(),
 				LastEgressUpdateAttemptNs:          entry.LastEgressUpdateAttempt.Load(),
+				Score:                              int(entry.GetScore()),
 			}
 		},
 		ReadNodeLatency: func(key model.NodeLatencyKey) *model.NodeLatency {
@@ -853,6 +887,7 @@ func restoreBootstrapSubscriptionBindings(
 func restoreBootstrapNodeDynamics(
 	engine *state.StateEngine,
 	pool *topology.GlobalNodePool,
+	scoreInitial int,
 ) error {
 	dynamics, err := engine.LoadAllNodesDynamic()
 	if err != nil {
@@ -870,6 +905,11 @@ func restoreBootstrapNodeDynamics(
 		}
 		entry.FailureCount.Store(int32(nd.FailureCount))
 		entry.CircuitOpenSince.Store(nd.CircuitOpenSince)
+		restoredScore := int32(nd.Score)
+		if restoredScore == 0 && nd.CircuitOpenSince == 0 {
+			restoredScore = int32(scoreInitial)
+		}
+		entry.SetScore(restoredScore)
 		entry.LastLatencyProbeAttempt.Store(nd.LastLatencyProbeAttemptNs)
 		entry.LastAuthorityLatencyProbeAttempt.Store(nd.LastAuthorityLatencyProbeAttemptNs)
 		entry.LastEgressUpdateAttempt.Store(nd.LastEgressUpdateAttemptNs)
@@ -983,6 +1023,7 @@ func bootstrapNodes(
 	outboundMgr *outbound.OutboundManager,
 	envCfg *config.EnvConfig,
 	latencyAuthorities []string,
+	scoreInitial int,
 ) error {
 	hashes, err := loadBootstrapNodeStatics(engine, pool, envCfg)
 	if err != nil {
@@ -994,7 +1035,7 @@ func bootstrapNodes(
 	if err := restoreBootstrapSubscriptionBindings(engine, pool, subManager); err != nil {
 		return err
 	}
-	if err := restoreBootstrapNodeDynamics(engine, pool); err != nil {
+	if err := restoreBootstrapNodeDynamics(engine, pool, scoreInitial); err != nil {
 		return err
 	}
 	if err := restoreBootstrapNodeLatencies(

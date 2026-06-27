@@ -40,6 +40,14 @@ type ProbeConfig struct {
 	LatencyTestURL     func() string
 	LatencyAuthorities func() []string
 
+	// ScoreRecoveryDelay controls the half-open circuit recovery probe interval.
+	ScoreRecoveryDelay func() time.Duration
+
+	// ScoreLatencyThreshold and ScoreDecLatency are passed through to the pool
+	// for latency-based score penalties. Kept here for config wiring symmetry.
+	ScoreLatencyThreshold func() time.Duration
+	ScoreDecLatency        func() int
+
 	// OnProbeEvent is called after each probe attempt completes (egress or latency).
 	// The kind parameter is "egress" or "latency".
 	OnProbeEvent func(kind string)
@@ -67,6 +75,7 @@ type ProbeManager struct {
 	maxAuthorityLatencyTestInterval func() time.Duration
 	latencyTestURL                  func() string
 	latencyAuthorities              func() []string
+	scoreRecoveryDelay              func() time.Duration
 	onProbeEvent                    func(kind string)
 }
 
@@ -269,6 +278,7 @@ func NewProbeManager(cfg ProbeConfig) *ProbeManager {
 		maxAuthorityLatencyTestInterval: cfg.MaxAuthorityLatencyTestInterval,
 		latencyTestURL:                  cfg.LatencyTestURL,
 		latencyAuthorities:              cfg.LatencyAuthorities,
+		scoreRecoveryDelay:              cfg.ScoreRecoveryDelay,
 		onProbeEvent:                    cfg.OnProbeEvent,
 	}
 }
@@ -290,6 +300,12 @@ func (m *ProbeManager) Start() {
 	go func() {
 		defer m.wg.Done()
 		scanloop.Run(m.stopCh, scanloop.DefaultMinInterval, scanloop.DefaultJitterRange, m.scanLatency)
+	}()
+
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		scanloop.Run(m.stopCh, scanloop.DefaultMinInterval, scanloop.DefaultJitterRange, m.scanCircuitRecovery)
 	}()
 
 	for i := 0; i < m.workerCount; i++ {
@@ -823,4 +839,45 @@ func (m *ProbeManager) currentLatencyTestURL() string {
 		testURL = m.latencyTestURL()
 	}
 	return testURL
+}
+
+// scanCircuitRecovery iterates pool nodes and enqueues probes for those
+// that have been circuit-open longer than the recovery delay.
+func (m *ProbeManager) scanCircuitRecovery() {
+	now := time.Now()
+	recoveryDelay := 5 * time.Minute // default
+	if m.scoreRecoveryDelay != nil {
+		recoveryDelay = m.scoreRecoveryDelay()
+	}
+	subLookup := m.pool.MakeSubLookup()
+
+	m.pool.Range(func(h node.Hash, entry *node.NodeEntry) bool {
+		select {
+		case <-m.stopCh:
+			return false
+		default:
+		}
+
+		if entry.IsDisabledBySubscriptions(subLookup) {
+			return true
+		}
+		if entry.Outbound.Load() == nil {
+			return true
+		}
+
+		circuitOpenSince := entry.CircuitOpenSince.Load()
+		if circuitOpenSince == 0 {
+			return true // not circuit-open
+		}
+
+		// Check if recovery delay has elapsed
+		elapsed := now.Sub(time.Unix(0, circuitOpenSince))
+		if elapsed < recoveryDelay {
+			return true // not yet time to retry
+		}
+
+		// Enqueue a latency probe to test recovery
+		m.enqueueProbe(h, probeTaskKindLatency, probePriorityNormal)
+		return true
+	})
 }

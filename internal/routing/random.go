@@ -161,16 +161,27 @@ func calculateScore(
 		return float64(leaseCount)
 	}
 
-	// Policy-based scoring.
+	// Base score from policy.
+	var baseScore float64
 	switch plat.AllocationPolicy {
 	case platform.AllocationPolicyPreferLowLatency:
-		return float64(latency)
+		baseScore = float64(latency)
 	case platform.AllocationPolicyPreferIdleIP:
-		return float64(leaseCount)
+		baseScore = float64(leaseCount)
 	case platform.AllocationPolicyBalanced:
 		fallthrough
 	default:
 		// (LeaseCount + 1) * Latency
-		return float64(leaseCount+1) * float64(latency)
+		baseScore = float64(leaseCount+1) * float64(latency)
 	}
+
+	// Apply score multiplier: higher node score = lower P2C score = preferred.
+	if entry != nil {
+		nodeScore := entry.GetScore()
+		if nodeScore > 0 {
+			baseScore = baseScore * (100.0 / float64(nodeScore))
+		}
+	}
+
+	return baseScore
 }

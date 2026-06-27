@@ -30,6 +30,16 @@ type RuntimeConfig struct {
 	// Persistence
 	CacheFlushInterval       Duration `json:"cache_flush_interval"`
 	CacheFlushDirtyThreshold int      `json:"cache_flush_dirty_threshold"`
+
+	// Scoring
+	ScoreInitial       int      `json:"score_initial"`
+	ScoreMax           int      `json:"score_max"`
+	ScoreIncSuccess    int      `json:"score_inc_success"`
+	ScoreDecFail       int      `json:"score_dec_fail"`
+	ScoreRecovery      int      `json:"score_recovery"`
+	ScoreRecoveryDelay Duration `json:"score_recovery_delay"`
+	ScoreLatencyThreshold Duration `json:"score_latency_threshold"`
+	ScoreDecLatency      int      `json:"score_dec_latency"`
 }
 
 // NewDefaultRuntimeConfig returns a RuntimeConfig populated with the default
@@ -56,5 +66,14 @@ func NewDefaultRuntimeConfig() *RuntimeConfig {
 
 		CacheFlushInterval:       Duration(5 * time.Minute),
 		CacheFlushDirtyThreshold: 1000,
+
+		ScoreInitial:       50,
+		ScoreMax:           100,
+		ScoreIncSuccess:    5,
+		ScoreDecFail:       10,
+		ScoreRecovery:      30,
+		ScoreRecoveryDelay: Duration(5 * time.Minute),
+		ScoreLatencyThreshold: Duration(500 * time.Millisecond),
+		ScoreDecLatency:      5,
 	}
 }

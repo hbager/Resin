@@ -594,7 +594,7 @@ func TestBootstrapNodes_MissingDynamicDefaultsCircuitOpen(t *testing.T) {
 	}
 
 	outboundMgr := outbound.NewOutboundManager(pool, &testutil.StubOutboundBuilder{})
-	if err := bootstrapNodes(engine, pool, subManager, outboundMgr, envCfg, runtimeCfg.LatencyAuthorities); err != nil {
+	if err := bootstrapNodes(engine, pool, subManager, outboundMgr, envCfg, runtimeCfg.LatencyAuthorities, runtimeCfg.ScoreInitial); err != nil {
 		t.Fatalf("bootstrapNodes: %v", err)
 	}
 
@@ -666,7 +666,7 @@ func TestBootstrapNodes_DynamicRecordOverridesDefaultCircuitOpen(t *testing.T) {
 	}
 
 	outboundMgr := outbound.NewOutboundManager(pool, &testutil.StubOutboundBuilder{})
-	if err := bootstrapNodes(engine, pool, subManager, outboundMgr, envCfg, runtimeCfg.LatencyAuthorities); err != nil {
+	if err := bootstrapNodes(engine, pool, subManager, outboundMgr, envCfg, runtimeCfg.LatencyAuthorities, runtimeCfg.ScoreInitial); err != nil {
 		t.Fatalf("bootstrapNodes: %v", err)
 	}
 
@@ -722,7 +722,7 @@ func TestBootstrapNodes_RestoreEvictedSubscriptionNodeWithoutPoolRef(t *testing.
 	}
 
 	outboundMgr := outbound.NewOutboundManager(pool, &testutil.StubOutboundBuilder{})
-	if err := bootstrapNodes(engine, pool, subManager, outboundMgr, envCfg, runtimeCfg.LatencyAuthorities); err != nil {
+	if err := bootstrapNodes(engine, pool, subManager, outboundMgr, envCfg, runtimeCfg.LatencyAuthorities, runtimeCfg.ScoreInitial); err != nil {
 		t.Fatalf("bootstrapNodes: %v", err)
 	}
 
@@ -804,7 +804,7 @@ func TestBootstrapNodes_TrimRegularLatencyKeepsAuthorities(t *testing.T) {
 	}
 
 	outboundMgr := outbound.NewOutboundManager(pool, &testutil.StubOutboundBuilder{})
-	if err := bootstrapNodes(engine, pool, subManager, outboundMgr, envCfg, runtimeCfg.LatencyAuthorities); err != nil {
+	if err := bootstrapNodes(engine, pool, subManager, outboundMgr, envCfg, runtimeCfg.LatencyAuthorities, runtimeCfg.ScoreInitial); err != nil {
 		t.Fatalf("bootstrapNodes: %v", err)
 	}
 

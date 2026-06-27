@@ -33,6 +33,7 @@ type NodeEntry struct {
 	// Atomic dynamic fields for concurrent hot-path reads.
 	FailureCount     atomic.Int32
 	CircuitOpenSince atomic.Int64               // unix-nano; 0 = not open
+	Score            atomic.Int32               // node health score; 0 = circuit-open
 	egressIP         atomic.Pointer[netip.Addr] // nil before first store
 	egressRegion     atomic.Pointer[string]     // lowercase country code from probe trace; nil when unknown
 	LastEgressUpdate atomic.Int64               // unix-nano of last successful egress-IP sample
@@ -283,4 +284,32 @@ func (e *NodeEntry) GetLastError() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.LastError
+}
+
+// GetScore returns the current node health score (0-100).
+func (e *NodeEntry) GetScore() int32 {
+	return e.Score.Load()
+}
+
+// AddScore atomically adds delta to the score, clamped to [0, max].
+// Returns the new score.
+func (e *NodeEntry) AddScore(delta int32, max int32) int32 {
+	for {
+		old := e.Score.Load()
+		newVal := old + delta
+		if newVal < 0 {
+			newVal = 0
+		}
+		if newVal > max {
+			newVal = max
+		}
+		if e.Score.CompareAndSwap(old, newVal) {
+			return newVal
+		}
+	}
+}
+
+// SetScore atomically sets the score.
+func (e *NodeEntry) SetScore(val int32) {
+	e.Score.Store(val)
 }

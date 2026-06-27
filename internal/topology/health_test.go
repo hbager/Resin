@@ -23,6 +23,12 @@ func newHealthTestPool(maxFailures int) (*GlobalNodePool, *SubscriptionManager) 
 		GeoLookup:              func(addr netip.Addr) string { return "us" },
 		MaxLatencyTableEntries: 16,
 		MaxConsecutiveFailures: func() int { return maxFailures },
+		ScoreInitial:           func() int { return 50 },
+		ScoreMax:               func() int { return 100 },
+		ScoreIncSuccess:        func() int { return 5 },
+		ScoreDecFail:           func() int { return 10 },
+		ScoreRecovery:          func() int { return 30 },
+		ScoreRecoveryDelay:     func() time.Duration { return 5 * time.Minute },
 	})
 	return pool, subMgr
 }
@@ -94,14 +100,20 @@ func TestRecordResult_MaxConsecutiveFailuresPulled(t *testing.T) {
 	sub := subscription.NewSubscription("s1", "TestSub", "url", true, false)
 	subMgr.Register(sub)
 
-	var maxFailures atomic.Int64
-	maxFailures.Store(3)
+	var scoreDecFail atomic.Int64
+	scoreDecFail.Store(10)
 
 	pool := NewGlobalNodePool(PoolConfig{
 		SubLookup:              subMgr.Lookup,
 		GeoLookup:              func(addr netip.Addr) string { return "us" },
 		MaxLatencyTableEntries: 16,
-		MaxConsecutiveFailures: func() int { return int(maxFailures.Load()) },
+		MaxConsecutiveFailures: func() int { return 3 },
+		ScoreInitial:           func() int { return 50 },
+		ScoreMax:               func() int { return 100 },
+		ScoreIncSuccess:        func() int { return 5 },
+		ScoreDecFail:           func() int { return int(scoreDecFail.Load()) },
+		ScoreRecovery:          func() int { return 30 },
+		ScoreRecoveryDelay:     func() time.Duration { return 5 * time.Minute },
 	})
 
 	h := addTestNode(pool, sub, `{"type":"ss","n":"pull-threshold"}`)
@@ -110,17 +122,17 @@ func TestRecordResult_MaxConsecutiveFailuresPulled(t *testing.T) {
 	if entry.IsCircuitOpen() {
 		t.Fatal("node should recover after first success")
 	}
-
+	// After recovery, score=30. With ScoreDecFail=10, need 3 failures to reach 0.
 	pool.RecordResult(h, false)
 	if entry.IsCircuitOpen() {
-		t.Fatal("should not be circuit-open after first failure")
+		t.Fatal("should not be circuit-open after first failure (score=20)")
 	}
 
-	// Lower threshold dynamically. Next failure should open circuit.
-	maxFailures.Store(2)
-	pool.RecordResult(h, false)
+	// Increase ScoreDecFail dynamically. Next failure should open circuit.
+	scoreDecFail.Store(20)
+	pool.RecordResult(h, false) // score=20-20=0 → circuit opens
 	if !entry.IsCircuitOpen() {
-		t.Fatal("should be circuit-open after threshold shrinks")
+		t.Fatal("should be circuit-open after ScoreDecFail increases")
 	}
 }
 
@@ -181,6 +193,8 @@ func TestRecordResult_CircuitBreak_RemovesFromView(t *testing.T) {
 	}
 
 	// Circuit break → remove from view.
+	// After recovery, score=30, ScoreDecFail=10 → 3 failures to reach 0.
+	pool.RecordResult(h, false)
 	pool.RecordResult(h, false)
 	pool.RecordResult(h, false)
 	if plat.View().Size() != 0 {
@@ -216,6 +230,7 @@ func TestRecordPassiveResult_DisabledPlatformSkipsFailures(t *testing.T) {
 
 	pool.RecordResult(h, false)
 	pool.RecordResult(h, false)
+	pool.RecordResult(h, false)
 	if !entry.IsCircuitOpen() {
 		t.Fatal("active health feedback should still open circuit")
 	}
@@ -234,7 +249,8 @@ func TestRecordPassiveResult_EnabledPlatformCountsFailures(t *testing.T) {
 
 	pool.RecordPassiveResult(plat.ID, h, false)
 	pool.RecordPassiveResult(plat.ID, h, false)
-	if got := entry.FailureCount.Load(); got != 2 {
+	pool.RecordPassiveResult(plat.ID, h, false)
+	if got := entry.FailureCount.Load(); got != 3 {
 		t.Fatalf("passive failures should be counted, failure count=%d", got)
 	}
 	if !entry.IsCircuitOpen() {
